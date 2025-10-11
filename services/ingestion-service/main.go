@@ -1,11 +1,14 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+
+	_ "github.com/lib/pq"
 )
 
 type LogEntry struct {
@@ -25,19 +28,20 @@ var (
 	logChan = make(chan LogCommand, 100)
 )
 
-func fileWriter() {
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Fatalf("Failed to open log file: %v", err)
-	}
+func addHelper() {
+	// f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// if err != nil {
+	// 	log.Fatalf("Failed to open log file: %v", err)
+	// }
 
-	defer f.Close()
+	// defer f.Close()
 
 	for cmd := range logChan {
-		bytes, _ := json.Marshal(cmd.Entry)
-		_, err := f.Write(bytes)
-		f.Write([]byte("\n"))
-		cmd.Result <- err
+		// bytes, _ := json.Marshal(cmd.Entry)
+		// _, err := f.Write(bytes)
+		// f.Write([]byte("\n"))
+		// cmd.Result <- err
+		fmt.Println(cmd.Entry)
 	}
 }
 
@@ -100,14 +104,21 @@ func splitLines(s string) []string {
 }
 
 func main() {
-	go fileWriter()
+	connectionString := "postgres://satvikm:@localhost/satvikm?sslmode=disable"
+	db, err := sql.Open("postgres", connectionString)
+	if err != nil {
+		log.Fatalf("Failed to connect to the database: %v", err)
+	}
+	defer db.Close()
+	go addHelper()
 
-	http.HandleFunc("/logs", func(w http.ResponseWriter, r *http.Request){
-		if r.Method == http.MethodGet{
+	http.HandleFunc("/logs", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
 			handleGetLog(w, r)
-		}else if r.Method == http.MethodPost{
+		case http.MethodPost:
 			handleAddLog(w, r)
-		}else{
+		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
