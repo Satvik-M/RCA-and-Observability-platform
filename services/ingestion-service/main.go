@@ -1,47 +1,39 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"os"
+	"time"
 
 	_ "github.com/lib/pq"
 )
 
 type LogEntry struct {
-	Timestamp string
-	Level     string
-	Message   string
-	Source    string
-}
-
-type LogCommand struct {
-	Entry  LogEntry
-	Result chan error
+	Level     string    `json:"level"`
+	Message   string    `json:"message"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 var (
-	logFile = "logs.jsonl"
-	logChan = make(chan LogCommand, 100)
+	logChan = make(chan LogEntry, 100)
 )
 
-func addHelper() {
-	// f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	// if err != nil {
-	// 	log.Fatalf("Failed to open log file: %v", err)
-	// }
-
-	// defer f.Close()
-
-	for cmd := range logChan {
-		// bytes, _ := json.Marshal(cmd.Entry)
-		// _, err := f.Write(bytes)
-		// f.Write([]byte("\n"))
-		// cmd.Result <- err
-		fmt.Println(cmd.Entry)
+func logWriter(ctx context.Context, db *sql.DB) {
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("Log writer is shutting down")
+			return
+		case logMsg := <-logChan:
+			_, err := db.Exec("INSERT INTO logs (level, message, timestamp) VALUES ($1, $2, $3)", logMsg.Level, logMsg.Message, logMsg.Timestamp)
+			if err != nil {
+				fmt.Printf("Failed to insert log in Db: %v\n", err)
+			}
+		}
 	}
 }
 
@@ -51,56 +43,40 @@ func handleAddLog(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid JOSN", http.StatusBadRequest)
 		return
 	}
-
-	done := make(chan error)
-	logChan <- LogCommand{Entry: entry, Result: done}
-
-	if err := <-done; err != nil {
-		http.Error(w, "Failed to write to the logs", http.StatusInternalServerError)
-		return
+	if entry.Timestamp.IsZero() {
+		entry.Timestamp = time.Now()
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	fmt.Println("Log added successfully")
+	select {
+	case logChan <- entry:
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprintf(w, "Log queued successfully")
+	default:
+		http.Error(w, "Server busy, try again later", http.StatusServiceUnavailable)
+	}
 }
 
-func handleGetLog(w http.ResponseWriter, r *http.Request) {
-	data, err := os.ReadFile(logFile)
+func handleGetLog(db *sql.DB, w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query("SELECT level, message, timestamp FROM logs ORDER BY timestamp DESC LIMIT 50")
 	if err != nil {
-		http.Error(w, "No logs found", http.StatusNotFound)
+		fmt.Println("Error while getting logs", err)
+		http.Error(w, "Error while getting logs", http.StatusInternalServerError)
 		return
 	}
 
-	lines := []LogEntry{}
-	for _, line := range splitLines(string(data)) {
-		if line == "" {
-			continue
+	defer rows.Close()
+	var logs []LogEntry
+	for rows.Next() {
+		var entry LogEntry
+		if err := rows.Scan(&entry.Level, &entry.Message, &entry.Timestamp); err != nil {
+			fmt.Println("Error while scanning logs", err)
+			http.Error(w, "Error while scanning logs", http.StatusInternalServerError)
+			return
 		}
-		var e LogEntry
-		json.Unmarshal([]byte(line), &e)
-		lines = append(lines, e)
+		logs = append(logs, entry)
 	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(lines)
-
-}
-
-func splitLines(s string) []string {
-	result := []string{}
-	current := ""
-	for _, ch := range s {
-		if ch == '\n' {
-			result = append(result, current)
-			current = ""
-		} else {
-			current += string(ch)
-		}
-	}
-	if current != "" {
-		result = append(result, current)
-	}
-	return result
+	json.NewEncoder(w).Encode(logs)
 }
 
 func main() {
@@ -110,12 +86,34 @@ func main() {
 		log.Fatalf("Failed to connect to the database: %v", err)
 	}
 	defer db.Close()
-	go addHelper()
+
+	if err := db.Ping(); err != nil {
+		log.Fatalf("Failed to ping the database: %v", err)
+	}
+	fmt.Println("Connected to the database successfully")
+
+	// --- Ensure table exists ---
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS logs (
+			id SERIAL PRIMARY KEY,
+			level TEXT,
+			message TEXT,
+			timestamp TIMESTAMP
+		)
+	`)
+	if err != nil {
+		log.Fatalf("Failed to create table: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go logWriter(ctx, db)
 
 	http.HandleFunc("/logs", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handleGetLog(w, r)
+			handleGetLog(db, w, r)
 		case http.MethodPost:
 			handleAddLog(w, r)
 		default:
