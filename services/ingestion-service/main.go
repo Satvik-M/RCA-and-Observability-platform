@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"sync"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -22,18 +25,24 @@ var (
 	logChan = make(chan LogEntry, 100)
 )
 
-func logWriter(ctx context.Context, db *sql.DB) {
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println("Log writer is shutting down")
-			return
-		case logMsg := <-logChan:
-			_, err := db.Exec("INSERT INTO logs (level, message, timestamp) VALUES ($1, $2, $3)", logMsg.Level, logMsg.Message, logMsg.Timestamp)
-			if err != nil {
-				fmt.Printf("Failed to insert log in Db: %v\n", err)
+func startLogWriterWorkers(logChannel <-chan LogEntry, wg *sync.WaitGroup, db *sql.DB) {
+	worker := 3
+	for i := 0; i < worker; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for logMsg := range logChannel {
+				fmt.Printf("Worker %d processing log: %s\n", i, logMsg.Message)
+				processLogIntoDb(logMsg, db)
 			}
-		}
+		}(i)
+	}
+}
+
+func processLogIntoDb(logMsg LogEntry, db *sql.DB) {
+	_, err := db.Exec("INSERT INTO logs (level, message, timestamp) VALUES ($1, $2, $3)", logMsg.Level, logMsg.Message, logMsg.Timestamp)
+	if err != nil {
+		fmt.Printf("Failed to insert log in Db: %v\n", err)
 	}
 }
 
@@ -105,11 +114,6 @@ func main() {
 		log.Fatalf("Failed to create table: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go logWriter(ctx, db)
-
 	http.HandleFunc("/logs", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -121,6 +125,33 @@ func main() {
 		}
 	})
 
-	fmt.Println("Log processing service running on port 8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	var wg sync.WaitGroup
+	startLogWriterWorkers(logChan, &wg, db)
+
+	// start HTTP server in a goroutine
+	srv := &http.Server{Addr: ":8080"}
+	go func() {
+		fmt.Println("Log processing service running on port 8080")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server failed: %v", err)
+		}
+	}()
+
+	// wait for interrupt signal
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	<-c
+
+	fmt.Println("Shutting down...")
+
+	// gracefully shutdown server
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	srv.Shutdown(ctx)
+
+	// close log channel so workers exit
+	close(logChan)
+	wg.Wait()
+	fmt.Println("Service stopped cleanly")
+
 }
