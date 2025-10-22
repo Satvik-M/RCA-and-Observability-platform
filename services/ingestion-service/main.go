@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/elastic/go-elasticsearch/v8"
 	_ "github.com/lib/pq"
 )
 
@@ -25,7 +27,19 @@ var (
 	logChan = make(chan LogEntry, 100)
 )
 
-func startLogWriterWorkers(logChannel <-chan LogEntry, wg *sync.WaitGroup, db *sql.DB) {
+func initializeElasticSearch() *elasticsearch.Client {
+	es, err := elasticsearch.NewClient(elasticsearch.Config{
+		Addresses: []string{"http://localhost:9200"},
+	})
+	if err != nil {
+
+		log.Fatal("Error creating the elastic search client: %s", err)
+	}
+	fmt.Println("Initialized ElasticSearch")
+	return es
+}
+
+func startLogWriterWorkers(logChannel <-chan LogEntry, wg *sync.WaitGroup, db *sql.DB, es *elasticsearch.Client) {
 	worker := 3
 	for i := 0; i < worker; i++ {
 		wg.Add(1)
@@ -34,9 +48,20 @@ func startLogWriterWorkers(logChannel <-chan LogEntry, wg *sync.WaitGroup, db *s
 			for logMsg := range logChannel {
 				fmt.Printf("Worker %d processing log: %s\n", i, logMsg.Message)
 				processLogIntoDb(logMsg, db)
+				processLogIntoElastic(logMsg, es)
 			}
 		}(i)
 	}
+}
+
+func processLogIntoElastic(logmsg LogEntry, es *elasticsearch.Client) {
+	doc, _ := json.Marshal(logmsg)
+	res, err := es.Index("logs", bytes.NewReader(doc))
+	if err != nil {
+		log.Println(err)
+	}
+	defer res.Body.Close()
+	fmt.Println(res.StatusCode)
 }
 
 func processLogIntoDb(logMsg LogEntry, db *sql.DB) {
@@ -125,8 +150,10 @@ func main() {
 		}
 	})
 
+	es := initializeElasticSearch()
+
 	var wg sync.WaitGroup
-	startLogWriterWorkers(logChan, &wg, db)
+	startLogWriterWorkers(logChan, &wg, db, es)
 
 	// start HTTP server in a goroutine
 	srv := &http.Server{Addr: ":8080"}
@@ -136,6 +163,13 @@ func main() {
 			log.Fatalf("HTTP server failed: %v", err)
 		}
 	}()
+
+	//testing elastic search client
+	// doc := map[string]string{"title": "Test Document"}
+	// body, _ := json.Marshal(doc)
+	// res, err := es.Index("test-index", bytes.NewReader(body))
+	// defer res.Body.Close()
+	// fmt.Println(res.StatusCode)
 
 	// wait for interrupt signal
 	c := make(chan os.Signal, 1)
