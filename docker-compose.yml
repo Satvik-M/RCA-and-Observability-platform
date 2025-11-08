@@ -1,15 +1,4 @@
 services:
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: satvikm
-      POSTGRES_PASSWORD: ""
-      POSTGRES_DB: satvikm
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-
   zookeeper:
     image: confluentinc/cp-zookeeper:7.3.0
     container_name: zookeeper
@@ -26,6 +15,7 @@ services:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      # NOTE: localhost:9092 is for your host machine. kafka:29092 is for other containers.
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
@@ -33,6 +23,7 @@ services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:9.1.2
     platform: linux/arm64
+    container_name: elasticsearch # Added a container_name
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -40,22 +31,25 @@ services:
     ports:
       - "9200:9200"
 
-  ingestion-service:
-    build:
-      context: services/ingestion-service/
-      # dockerfile: Dockerfile
-    depends_on:
-      - db
-      - elasticsearch
-    environment:
-      DATABASE_URL: postgres://satvikm:@db:5432/satvikm?sslmode=disable
-      ELASTIC_URL: http://elasticsearch:9200
-    ports:
-      - "8080:8080"
-    volumes:
-      - .:/app
-    working_dir: /app
-    command: ["go", "run", "main.go"]
+  # --- ADD OUR 3 NEW SERVICES BELOW ---
 
-volumes:
-  pgdata:
+  ingestion-service:
+    build: ./services/ingestion-service
+    container_name: ingestion-service
+    ports:
+      - "8080:8080" # Expose the API port
+    depends_on:
+      - kafka
+
+  log-processing-service:
+    build: ./services/log-processing-service
+    container_name: log-processing-service
+    depends_on:
+      - kafka
+      - elasticsearch
+
+  ai-analysis-service:
+    build: ./services/ai-analysis-service
+    container_name: ai-analysis-service
+    depends_on:
+      - kafka

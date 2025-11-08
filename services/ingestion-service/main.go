@@ -55,7 +55,7 @@ func handleAddLog(w http.ResponseWriter, r *http.Request) {
 func main() {
 	//connect to kafka
 	kafkaWriter = &kafka.Writer{
-		Addr:     kafka.TCP("localhost:9092"),
+		Addr:     kafka.TCP("kafka:29092"),
 		Topic:    "raw-logs",
 		Balancer: &kafka.LeastBytes{},
 	}

@@ -27,7 +27,7 @@ var (
 
 func initializeElasticsearch() *elasticsearch.Client {
 	es, err := elasticsearch.NewClient(elasticsearch.Config{
-		Addresses: []string{"http://localhost:9200"},
+		Addresses: []string{"http://elasticsearch:9200"},
 	})
 	if err != nil {
 		log.Fatalf("Error creating the Elasticsearch client: " + err.Error())
@@ -70,7 +70,7 @@ func main() {
 	esClient = initializeElasticsearch()
 
 	kafkaReader = kafka.NewReader(kafka.ReaderConfig{
-		Brokers:  []string{"localhost:9092"},
+		Brokers:  []string{"kafka:29092"},
 		Topic:    "raw-logs",
 		GroupID:  "log-processors",
 		MinBytes: 10e3,
@@ -78,7 +78,7 @@ func main() {
 	})
 
 	kafkaWriter = &kafka.Writer{
-		Addr:     kafka.TCP("localhost:9092"),
+		Addr:     kafka.TCP("kafka:29092"),
 		Topic:    "errors-for-ai",
 		Balancer: &kafka.LeastBytes{},
 	}
