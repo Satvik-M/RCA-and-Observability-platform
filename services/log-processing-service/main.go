@@ -20,11 +20,11 @@ type LogEntry struct {
 	Timestamp string `json:"timestamp"`
 }
 
-var (
+type App struct {
 	kafkaWriter *kafka.Writer
 	kafkaReader *kafka.Reader
 	esClient    *elasticsearch.Client
-)
+}
 
 func initializeElasticsearch() *elasticsearch.Client {
 	es, err := elasticsearch.NewClient(elasticsearch.Config{
@@ -38,9 +38,9 @@ func initializeElasticsearch() *elasticsearch.Client {
 	return es
 }
 
-func processLogIntoElastic(logEntry LogEntry, esClient *elasticsearch.Client) {
+func (app *App) processLogIntoElastic(logEntry LogEntry) {
 	doc, _ := json.Marshal(logEntry)
-	res, err := esClient.Index("logs", bytes.NewReader(doc))
+	res, err := app.esClient.Index("logs", bytes.NewReader(doc))
 	if err != nil {
 		log.Fatalf("Error getting response from Elasticsearch: " + err.Error())
 	}
@@ -48,7 +48,7 @@ func processLogIntoElastic(logEntry LogEntry, esClient *elasticsearch.Client) {
 	fmt.Println("Log entry indexed into Elasticsearch:", logEntry)
 }
 
-func forwardErrorToKafka(lofEntry LogEntry, kafkaWriter *kafka.Writer) {
+func (app *App) forwardErrorToKafka(lofEntry LogEntry) {
 	logBytes, err := json.Marshal(lofEntry)
 	if err != nil {
 		fmt.Println("Error marshalling log entry for error forwarding:", err)
@@ -59,7 +59,7 @@ func forwardErrorToKafka(lofEntry LogEntry, kafkaWriter *kafka.Writer) {
 		Value: logBytes,
 	}
 
-	err = kafkaWriter.WriteMessages(context.Background(), msg)
+	err = app.kafkaWriter.WriteMessages(context.Background(), msg)
 	if err != nil {
 		fmt.Println("Error writing error log to kafka:", err)
 		return
@@ -69,9 +69,9 @@ func forwardErrorToKafka(lofEntry LogEntry, kafkaWriter *kafka.Writer) {
 
 func main() {
 	time.Sleep(10 * time.Second)
-	esClient = initializeElasticsearch()
+	elasticClient := initializeElasticsearch()
 
-	kafkaReader = kafka.NewReader(kafka.ReaderConfig{
+	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  []string{"kafka:29092"},
 		Topic:    "raw-logs",
 		GroupID:  "log-processors",
@@ -79,10 +79,16 @@ func main() {
 		MaxBytes: 10e6,
 	})
 
-	kafkaWriter = &kafka.Writer{
+	writer := &kafka.Writer{
 		Addr:     kafka.TCP("kafka:29092"),
 		Topic:    "errors-for-ai",
 		Balancer: &kafka.LeastBytes{},
+	}
+
+	app := &App{
+		kafkaReader: reader,
+		kafkaWriter: writer,
+		esClient:    elasticClient,
 	}
 	fmt.Println("Kafka reader and writer initialized")
 
@@ -91,7 +97,7 @@ func main() {
 	fmt.Println("Starting to read messages from Kafka")
 	go func() {
 		for {
-			m, err := kafkaReader.ReadMessage(context.Background())
+			m, err := app.kafkaReader.ReadMessage(context.Background())
 			if err != nil {
 				log.Fatalf("Error reading message from Kafka: " + err.Error())
 			}
@@ -101,8 +107,8 @@ func main() {
 				fmt.Println("Error unmarshalling log entry:", err)
 				continue
 			}
-			forwardErrorToKafka(logEntry, kafkaWriter)
-			processLogIntoElastic(logEntry, esClient)
+			app.forwardErrorToKafka(logEntry)
+			app.processLogIntoElastic(logEntry)
 		}
 	}()
 
@@ -110,11 +116,11 @@ func main() {
 	signal.Notify(c, os.Interrupt)
 	<-c
 	fmt.Println("Shutting down log processing service")
-	if err := kafkaReader.Close(); err != nil {
+	if err := app.kafkaReader.Close(); err != nil {
 		log.Fatalf("%s", "Error closing Kafka reader: "+err.Error())
 	}
 
-	if err := kafkaWriter.Close(); err != nil {
+	if err := app.kafkaWriter.Close(); err != nil {
 		log.Fatalf("%s", "Error closing Kafka writer: "+err.Error())
 	}
 	// esClient.Close()

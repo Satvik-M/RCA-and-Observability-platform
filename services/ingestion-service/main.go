@@ -20,11 +20,11 @@ type LogEntry struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-var (
+type App struct {
 	kafkaWriter *kafka.Writer
-)
+}
 
-func handleAddLog(w http.ResponseWriter, r *http.Request) {
+func (app *App) handleAddLog(w http.ResponseWriter, r *http.Request) {
 	var entry LogEntry
 	if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -44,7 +44,7 @@ func handleAddLog(w http.ResponseWriter, r *http.Request) {
 		Value: logBytes,
 	}
 
-	err = kafkaWriter.WriteMessages(context.Background(), msg)
+	err = app.kafkaWriter.WriteMessages(context.Background(), msg)
 	if err != nil {
 		fmt.Println("Error writing to kafka:", err)
 	}
@@ -55,17 +55,21 @@ func handleAddLog(w http.ResponseWriter, r *http.Request) {
 func main() {
 	time.Sleep(10 * time.Second)
 	//connect to kafka
-	kafkaWriter = &kafka.Writer{
+	writer := &kafka.Writer{
 		Addr:     kafka.TCP("kafka:29092"),
 		Topic:    "raw-logs",
 		Balancer: &kafka.LeastBytes{},
+	}
+
+	app := &App{
+		kafkaWriter: writer,
 	}
 
 	fmt.Println("Connected to kafka successfully")
 
 	http.HandleFunc("/logs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			handleAddLog(w, r)
+			app.handleAddLog(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -93,7 +97,7 @@ func main() {
 	srv.Shutdown(ctx)
 
 	// --- Close Kafka writer ---
-	if err := kafkaWriter.Close(); err != nil {
+	if err := app.kafkaWriter.Close(); err != nil {
 		log.Printf("Failed to close Kafka writer: %v", err)
 	}
 	fmt.Println("Service stopped cleanly")
