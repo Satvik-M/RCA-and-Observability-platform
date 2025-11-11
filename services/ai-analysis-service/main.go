@@ -4,36 +4,55 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"time"
 
+	"ai-analysis-service/models"
+
 	"github.com/segmentio/kafka-go"
+	"google.golang.org/genai"
 )
 
-type LogEntry struct {
-	Level     string `json:"level"`
-	Message   string `json:"message"`
-	Timestamp string `json:"timestamp"`
+type App struct {
+	kafkaReader *kafka.Reader
+	genaiClient *genai.Client
 }
 
-func analyzeError(entry LogEntry) string {
-	fmt.Println("Analyzing error log entry:", entry)
-	time.Sleep(100 * time.Millisecond) // Simulate analysis time
+func (app *App) analyzeError(entry models.LogEntry) string {
+	fmt.Printf("Sending to Gemini for analysis: '%s'\n", entry.Message)
 
-	var analysis string
-	if strings.Contains(entry.Message, "database connection") {
-		analysis = "Potential Cause: Possibly database connection issues"
-	} else if strings.Contains(entry.Message, "invalid credentials") {
-		analysis = "Potential Cause: The service is using an incorrect username or password. Recommendation: Verify environment variables for credentials."
-	} else {
-		analysis = "Potential Cause: A general application error occurred. Recommendation: Review application logic and surrounding logs for context."
+	// 1. Create a specific prompt
+	prompt := fmt.Sprintf("You are an expert system administrator. Analyze the following log error and provide a brief, one-paragraph explanation of the potential cause and a recommended action. Log Error: %s", entry.Message)
+
+	// 2. Send the request
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := app.genaiClient.Models.GenerateContent(
+		ctx,
+		"gemini-2.5-flash", // Using 1.5-flash, a fast and capable model
+		genai.Text(prompt),
+		nil,
+	)
+	if err != nil {
+		log.Printf("Failed to generate content: %v", err)
+		return "Error: Failed to contact AI service."
 	}
-	return analysis
+
+	// 3. Extract and return the AI's text response
+	return result.Text()
 }
 
 func main() {
+	ctx := context.Background()
+	client, err := genai.NewClient(ctx, nil) // nil automatically uses env var
+	if err != nil {
+		log.Fatalf("Failed to create genai client: %v", err)
+	}
+
+	time.Sleep(10 * time.Second)
 	kafkaReader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  []string{"kafka:29092"},
 		Topic:    "errors-for-ai",
@@ -44,23 +63,28 @@ func main() {
 
 	fmt.Println("Kafka service subscribed for topic 'errors-for-ai'")
 
+	app := &App{
+		kafkaReader: kafkaReader,
+		genaiClient: client,
+	}
+
 	go func() {
 		fmt.Println("Starting the go routine for handling the errors")
 
 		for {
-			m, err := kafkaReader.ReadMessage(context.Background())
+			m, err := app.kafkaReader.ReadMessage(context.Background())
 			if err != nil {
 				fmt.Println("Error reading message from Kafka:", err)
 				continue
 			}
 
-			var entry LogEntry
+			var entry models.LogEntry
 			if err := json.Unmarshal(m.Value, &entry); err != nil {
 				fmt.Println("Error unmarshalling log entry:", err)
 				continue
 			}
 
-			aiAnalyzerResult := analyzeError(entry)
+			aiAnalyzerResult := app.analyzeError(entry)
 			fmt.Println("AI analysis result for log entry:", aiAnalyzerResult)
 		}
 	}()
@@ -71,7 +95,7 @@ func main() {
 
 	fmt.Println("Shutting down AI analysis service")
 
-	if err := kafkaReader.Close(); err != nil {
+	if err := app.kafkaReader.Close(); err != nil {
 		fmt.Println("Error closing Kafka reader:", err)
 	}
 

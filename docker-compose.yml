@@ -53,3 +53,5 @@ services:
     container_name: ai-analysis-service
     depends_on:
       - kafka
+    environment: # <-- ADD THIS BLOCK
+      - GEMINI_API_KEY=${GEMINI_API_KEY}

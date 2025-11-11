@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/segmentio/kafka-go"
@@ -67,6 +68,7 @@ func forwardErrorToKafka(lofEntry LogEntry, kafkaWriter *kafka.Writer) {
 }
 
 func main() {
+	time.Sleep(10 * time.Second)
 	esClient = initializeElasticsearch()
 
 	kafkaReader = kafka.NewReader(kafka.ReaderConfig{
@@ -99,7 +101,7 @@ func main() {
 				fmt.Println("Error unmarshalling log entry:", err)
 				continue
 			}
-
+			forwardErrorToKafka(logEntry, kafkaWriter)
 			processLogIntoElastic(logEntry, esClient)
 		}
 	}()

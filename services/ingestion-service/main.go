@@ -53,6 +53,7 @@ func handleAddLog(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	time.Sleep(10 * time.Second)
 	//connect to kafka
 	kafkaWriter = &kafka.Writer{
 		Addr:     kafka.TCP("kafka:29092"),
